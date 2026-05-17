@@ -1,59 +1,85 @@
 package com.akimi;
 
-import org.apache.lucene.index.*;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.store.Directory;
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.search.*;
 import org.apache.lucene.store.FSDirectory;
 
-import java.io.IOException;
-import java.nio.file.Paths;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Properties;
 
 public class BaseLuceneIndex {
+    private final Path rootDir;
+    private final Path iniPath;
 
-    // Volatile ensures visibility across query threads when the reference changes
-    public volatile IndexSearcher searcher;
-    private Directory directory;
+    private IndexWriter writer;
+    private SearcherManager searcherManager;
+    private ControlledRealTimeReopenThread<IndexSearcher> nrtThread;
 
-    public BaseLuceneIndex(FSDirectory directory) throws IOException {
-        this.directory = directory;
-        var reader = DirectoryReader.open(this.directory);
-        this.searcher = new IndexSearcher(reader);
+    public BaseLuceneIndex(Path rootDir) {
+        this.rootDir = rootDir;
+        this.iniPath = rootDir.resolve("index.ini");
     }
 
-    /**
-     * Atomically switches the application to a freshly built index directory.
-     */
-    public synchronized void swapToNewIndex(String newIndexPath) throws IOException {
-        // 1. Open the new directory and reader
-        var nextDir = FSDirectory.open(Paths.get(newIndexPath));
-        var nextReader = DirectoryReader.open(nextDir);
-        var nextSearcher = new IndexSearcher(nextReader);
+    public synchronized void init(Analyzer analyzer) throws IOException {
+        String currentDirName = readCurrentDirectoryName();
+        Path indexPath = rootDir.resolve(currentDirName);
 
-        // 2. Warm up the new searcher (Crucial to populate OS page cache / Lucene caches)
-        warmUp(nextSearcher);
+        // TODO meh
+        if (!Files.exists(indexPath)) {
+            Files.createDirectories(indexPath);
+        }
 
-        // 3. Keep references to the old components for cleanup
-        var oldSearcher = this.searcher;
-        var oldDir = this.directory;
+        IndexWriterConfig config = new IndexWriterConfig(analyzer);
+        this.writer = new IndexWriter(FSDirectory.open(indexPath), config);
+        this.searcherManager = new SearcherManager(writer, true, true, null);
 
-        // 4. The Atomic Swap
-        // New incoming queries via getSearcher() instantly use the new index
-        this.searcher = nextSearcher;
-        this.directory = nextDir;
-
-        // 5. Resource Cleanup
-        // Safely close the old reader. Existing queries running on oldSearcher
-        // will finish safely because Lucene readers use ref-counting under the hood.
-        oldSearcher.getIndexReader().close();
-        oldDir.close();
+        // 5.0s max stale (passive), 0.025s min stale (burst protective)
+        this.nrtThread = new ControlledRealTimeReopenThread<>(writer, searcherManager, 5.0, 0.025);
+        this.nrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName());
+        this.nrtThread.setDaemon(true);
+        this.nrtThread.start();
     }
 
-    private void warmUp(IndexSearcher searcher) {
-        try {
-            // Run a few common heavy queries here so the new index isn't "cold"
-            // e.g., searcher.search(someCommonQuery, 10);
-        } catch (Exception e) {
-            // Log warning but don't block the swap
+    public IndexWriter createTemporaryRebuildWriter(String timestamp, Analyzer analyzer) throws IOException {
+        Path newPath = rootDir.resolve(timestamp);
+        Files.createDirectories(newPath);
+        IndexWriterConfig config = new IndexWriterConfig(analyzer);
+        return new IndexWriter(FSDirectory.open(newPath), config);
+    }
+
+    public synchronized void switchToNewIndex(String timestamp, Analyzer analyzer) throws IOException {
+        if (nrtThread != null) nrtThread.close();
+        if (searcherManager != null) searcherManager.close();
+        if (writer != null) writer.close();
+
+        writeCurrentDirectoryName(timestamp);
+        init(analyzer);
+    }
+
+    private String readCurrentDirectoryName() throws IOException {
+        if (!Files.exists(iniPath)) {
+            return "default";
+        }
+        Properties props = new Properties();
+        try (InputStream is = Files.newInputStream(iniPath)) {
+            props.load(is);
+        }
+        return props.getProperty("current", "default");
+    }
+
+    private void writeCurrentDirectoryName(String timestamp) throws IOException {
+        Properties props = new Properties();
+        props.setProperty("current", timestamp);
+        try (OutputStream os = Files.newOutputStream(iniPath)) {
+            props.store(os, "Lucene Index Tracking");
         }
     }
+
+    public IndexWriter getWriter() { return writer; }
+    public SearcherManager getSearcherManager() { return searcherManager; }
+    public ControlledRealTimeReopenThread<IndexSearcher> getNrtThread() { return nrtThread; }
 }
