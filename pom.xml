@@ -27,6 +27,12 @@
             <artifactId>lucene-analysis-common</artifactId>
             <version>${lucene.version}</version>
         </dependency>
+
+        <dependency>
+            <groupId>de.siegmar</groupId>
+            <artifactId>fastcsv</artifactId>
+            <version>4.2.0</version>
+        </dependency>
     </dependencies>
 
 </project>

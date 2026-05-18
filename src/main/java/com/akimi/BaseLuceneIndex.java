@@ -11,6 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
 
+/*
+    Holds an IndexWriter for persistent reads.
+ */
 public class BaseLuceneIndex {
     private final Path rootDir;
     private final Path iniPath;
@@ -24,51 +27,61 @@ public class BaseLuceneIndex {
         this.iniPath = rootDir.resolve("index.ini");
     }
 
+    // Inside BaseLuceneIndex.java
     public synchronized void init(Analyzer analyzer) throws IOException {
         String currentDirName = readCurrentDirectoryName();
         Path indexPath = rootDir.resolve(currentDirName);
 
-        // TODO meh
-        if (!Files.exists(indexPath)) {
-            Files.createDirectories(indexPath);
+        Files.createDirectories(indexPath);
+
+        // Open an un-locked FSDirectory
+        var dir = FSDirectory.open(indexPath);
+
+        // FIX: If you only need to read/search this index right now,
+        // bootstrap the SearcherManager directly from the Directory, NOT the Writer.
+        this.searcherManager = new SearcherManager(dir, null);
+
+        // Only spin up the NRT thread if a writer actually exists
+        if (this.writer != null) {
+            this.nrtThread = new ControlledRealTimeReopenThread<>(writer, searcherManager, 5.0, 0.025);
+            this.nrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName());
+            this.nrtThread.setDaemon(true);
+            this.nrtThread.start();
         }
-
-        IndexWriterConfig config = new IndexWriterConfig(analyzer);
-        this.writer = new IndexWriter(FSDirectory.open(indexPath), config);
-        this.searcherManager = new SearcherManager(writer, true, true, null);
-
-        // 5.0s max stale (passive), 0.025s min stale (burst protective)
-        this.nrtThread = new ControlledRealTimeReopenThread<>(writer, searcherManager, 5.0, 0.025);
-        this.nrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName());
-        this.nrtThread.setDaemon(true);
-        this.nrtThread.start();
     }
-
-    public IndexWriter createTemporaryRebuildWriter(String timestamp, Analyzer analyzer) throws IOException {
+    // This is basically a utility
+    public IndexWriter createTemporaryRebuildWriter(String timestamp,
+                                                     Analyzer analyzer) throws IOException {
         Path newPath = rootDir.resolve(timestamp);
-        Files.createDirectories(newPath);
         IndexWriterConfig config = new IndexWriterConfig(analyzer);
         return new IndexWriter(FSDirectory.open(newPath), config);
     }
 
     public synchronized void switchToNewIndex(String timestamp, Analyzer analyzer) throws IOException {
-        if (nrtThread != null) nrtThread.close();
-        if (searcherManager != null) searcherManager.close();
-        if (writer != null) writer.close();
+        // 1. Stop the background refresh thread first
+        if (nrtThread != null) {
+            nrtThread.close();
+            nrtThread.interrupt();
+        }
+        // 2. Release readers
+        if (searcherManager != null) {
+            searcherManager.close();
+        }
+        // 3. Commit and close the old disk writer
+        if (writer != null) {
+            writer.close();
+        }
 
         writeCurrentDirectoryName(timestamp);
         init(analyzer);
     }
 
     private String readCurrentDirectoryName() throws IOException {
-        if (!Files.exists(iniPath)) {
-            return "default";
-        }
         Properties props = new Properties();
         try (InputStream is = Files.newInputStream(iniPath)) {
             props.load(is);
         }
-        return props.getProperty("current", "default");
+        return props.getProperty("current");
     }
 
     private void writeCurrentDirectoryName(String timestamp) throws IOException {
@@ -78,6 +91,7 @@ public class BaseLuceneIndex {
             props.store(os, "Lucene Index Tracking");
         }
     }
+
 
     public IndexWriter getWriter() { return writer; }
     public SearcherManager getSearcherManager() { return searcherManager; }

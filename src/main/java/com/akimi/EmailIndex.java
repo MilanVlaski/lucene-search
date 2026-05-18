@@ -8,9 +8,6 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.search.*;
 
 import java.io.IOException;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.List;
 
 public class EmailIndex {
     private final BaseLuceneIndex storage;
@@ -25,16 +22,20 @@ public class EmailIndex {
         storage.init(analyzer);
     }
 
-    // Perhaps refactor into two methods?
     public void add(String id, String body, boolean immediate) throws IOException, InterruptedException {
-        Document doc = new Document();
-        doc.add(new StringField("id", id, Field.Store.YES));
-        doc.add(new TextField("body", body, Field.Store.NO));
+        Document doc = document(id, body);
 
         long gen = storage.getWriter().addDocument(doc);
         if (immediate) {
             storage.getNrtThread().waitForGeneration(gen);
         }
+    }
+
+    public static Document document(String id, String body) {
+        Document doc = new Document();
+        doc.add(new StringField("id", id, Field.Store.YES));
+        doc.add(new TextField("body", body, Field.Store.NO));
+        return doc;
     }
 
     public void delete(String id) throws IOException {
@@ -51,17 +52,12 @@ public class EmailIndex {
         }
     }
 
-    public void rebuildIndex(List<Document> documents) throws IOException {
-        String newTimestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd.HH.mm.ss"));
-
-        // 1. Create isolated writer using the EmailIndexer's specific analyzer
-        try (IndexWriter rebuildWriter = storage.createTemporaryRebuildWriter(newTimestamp, analyzer)) {
-
-            rebuildWriter.addDocuments(documents);
-            rebuildWriter.commit();
-
-            // 3. Atomically drop old readers/writers and update index.ini
-            storage.switchToNewIndex(newTimestamp, analyzer);
-        }
+    public IndexWriter createTemporaryRebuildWriter(String timestamp) throws IOException {
+        return storage.createTemporaryRebuildWriter(timestamp, analyzer);
     }
+
+    public void switchToNewIndex(String timestamp) throws IOException {
+        storage.switchToNewIndex(timestamp, analyzer);
+    }
+
 }

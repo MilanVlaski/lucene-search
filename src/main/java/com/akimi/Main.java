@@ -1,31 +1,24 @@
 package com.akimi;
 
-import org.apache.lucene.store.FSDirectory;
-
 import java.io.IOException;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 
-//TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
-// click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
 public class Main {
     public static void main(String[] args) {
+        String search = "joh";
+        System.out.println("searching for: " + search);
+
+        var addressIndex = new EmailAddressIndex(
+            new BaseLuceneIndex(Path.of("indexes/email-addresses"))
+        );
 
         try {
-        var dir = FSDirectory.open(Paths.get("emailindex"));
+            addressIndex.start();
+            addressIndex.autocompleteAddress(search, 5)
+                .forEach(System.out::println);
 
-            var emailIndex = new EmailIndex(dir,
-                new BaseLuceneIndex(dir)
-            );
-
-            emailIndex.addToIndex();
-            emailIndex.rebuildIndexFrom("bla");
-
-            emailIndex.search();
-
-            emailIndex.deleteFromIndex();
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("Search operation failed", e);
         }
-
     }
 }
