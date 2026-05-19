@@ -62,15 +62,19 @@ public class LoadIndexes {
             addressWriter.commit();
             emailWriter.commit();
 
-            // FIX 5: Execute the atomic cutover for live readers
-            addressIndex.switchToNewIndex(timestamp);
-            emailIndex.switchToNewIndex(timestamp);
 
-            System.out.println("Rebuild complete. Swapped to: " + timestamp);
 
         } catch (IOException e) {
             throw new RuntimeException("Failed to execute index bulk reload", e);
         }
+        // FIX 5: Execute the atomic cutover for live readers
+        try {
+            addressIndex.switchToNewIndex(timestamp);
+            emailIndex.switchToNewIndex(timestamp);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        System.out.println("Rebuild complete. Swapped to: " + timestamp);
     }
 
     private static String parseMessageId(String headers) {

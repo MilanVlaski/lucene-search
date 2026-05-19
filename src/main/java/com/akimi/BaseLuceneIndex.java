@@ -36,10 +36,12 @@ public class BaseLuceneIndex {
 
         // Open an un-locked FSDirectory
         var dir = FSDirectory.open(indexPath);
+        var config = new IndexWriterConfig(analyzer);
 
+        this.writer = new IndexWriter(dir, config);
         // FIX: If you only need to read/search this index right now,
         // bootstrap the SearcherManager directly from the Directory, NOT the Writer.
-        this.searcherManager = new SearcherManager(dir, null);
+        this.searcherManager = new SearcherManager(writer, true, true , null);
 
         // Only spin up the NRT thread if a writer actually exists
         if (this.writer != null) {

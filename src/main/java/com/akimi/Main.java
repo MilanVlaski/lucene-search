@@ -5,7 +5,7 @@ import java.nio.file.Path;
 
 public class Main {
     public static void main(String[] args) {
-        String search = "str";
+        String search = "wa";
         System.out.println("searching for email address: " + search);
 
         var addressIndex = new EmailAddressIndex(
