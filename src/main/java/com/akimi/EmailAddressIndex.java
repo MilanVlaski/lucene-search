@@ -1,15 +1,17 @@
 package com.akimi;
 
-import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.*;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
+import org.apache.lucene.analysis.core.WhitespaceTokenizer;
+import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
+import org.apache.lucene.analysis.ngram.EdgeNGramTokenFilter;
 import org.apache.lucene.document.*;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.*;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class EmailAddressIndex {
     private final BaseLuceneIndex storage;
@@ -17,7 +19,22 @@ public class EmailAddressIndex {
 
     public EmailAddressIndex(BaseLuceneIndex storage) {
         this.storage = storage;
-        this.analyzer = new KeywordAnalyzer();
+
+        Analyzer addressSearchAnalyzer = new Analyzer() {
+            @Override
+            protected TokenStreamComponents createComponents(String fieldName) {
+                Tokenizer source = new WhitespaceTokenizer();
+                TokenStream filter = new LowerCaseFilter(source);
+                filter = new EdgeNGramTokenFilter(filter, 2, 20, true);
+                return new TokenStreamComponents(source, filter);
+            }
+        };
+
+        // Apply n-grams ONLY to the "address_search" field
+        this.analyzer = new PerFieldAnalyzerWrapper(
+            new KeywordAnalyzer(),
+            Map.of("address_search", addressSearchAnalyzer)
+        );
     }
 
     public void start() throws IOException {
@@ -26,6 +43,7 @@ public class EmailAddressIndex {
 
     public void addOrUpdate(String address, boolean immediate) throws IOException, InterruptedException {
         var doc = document(address);
+        // Exact term match on the StringField works perfectly now
         long gen = storage.getWriter().updateDocument(new Term("address", address), doc);
         if (immediate) {
             storage.getNrtThread().waitForGeneration(gen);
@@ -34,7 +52,6 @@ public class EmailAddressIndex {
 
     public void add(String address, boolean immediate) throws IOException, InterruptedException {
         Document doc = document(address);
-
         long gen = storage.getWriter().addDocument(doc);
         if (immediate) {
             storage.getNrtThread().waitForGeneration(gen);
@@ -43,7 +60,10 @@ public class EmailAddressIndex {
 
     public static Document document(String address) {
         Document doc = new Document();
+        // "address" is stored exactly for retrieval, updates, and deletes
         doc.add(new StringField("address", address, Field.Store.YES));
+        // "address_search" gets tokenized into n-grams for autocomplete queries
+        doc.add(new TextField("address_search", address, Field.Store.NO));
         return doc;
     }
 
@@ -51,16 +71,15 @@ public class EmailAddressIndex {
         storage.getWriter().deleteDocuments(new Term("address", address));
     }
 
-    public List<String> autocompleteAddress(String prefix, int limit) throws IOException {
-        Query query = new PrefixQuery(new Term("address", prefix.toLowerCase()));
+    public List<String> autocompleteAddress(String address, int limit) throws IOException {
+        // Use TermQuery against the n-gram optimized field
+        Query query = new TermQuery(new Term("address_search", address.toLowerCase().trim()));
         List<String> results = new ArrayList<>();
 
         SearcherManager manager = storage.getSearcherManager();
-
         IndexSearcher searcher = manager.acquire();
         try {
             TopDocs hits = searcher.search(query, limit);
-
             for (ScoreDoc scoreDoc : hits.scoreDocs) {
                 Document doc = searcher.storedFields().document(scoreDoc.doc);
                 results.add(doc.get("address"));
