@@ -1,0 +1,3 @@
+- Should filling the index happen outside of the class?
+- Should the base index class handle the index file and the .ini version?
+- Which approach do we take for "hotswaps"?

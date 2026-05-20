@@ -9,12 +9,17 @@ import org.apache.lucene.store.FSDirectory;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Properties;
 
 /*
     Holds an IndexWriter for persistent reads.
  */
 public class BaseLuceneIndex {
+    public static final DateTimeFormatter DIRECTORY_FORMAT =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd.HH.mm.ss");
+
     private final Path rootDir;
     private final Path iniPath;
 
@@ -27,9 +32,13 @@ public class BaseLuceneIndex {
         this.iniPath = rootDir.resolve("index.ini");
     }
 
-    // Inside BaseLuceneIndex.java
     public synchronized void init(Analyzer analyzer) throws IOException {
         String currentDirName = readCurrentDirectoryName();
+        if(currentDirName.isBlank()) {
+            writeCurrentDirectoryName(LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT));
+        }
+        currentDirName = readCurrentDirectoryName();
+
         Path indexPath = rootDir.resolve(currentDirName);
 
         Files.createDirectories(indexPath);
@@ -39,21 +48,17 @@ public class BaseLuceneIndex {
         var config = new IndexWriterConfig(analyzer);
 
         this.writer = new IndexWriter(dir, config);
-        // FIX: If you only need to read/search this index right now,
-        // bootstrap the SearcherManager directly from the Directory, NOT the Writer.
-        this.searcherManager = new SearcherManager(writer, true, true , null);
+        this.searcherManager = new SearcherManager(writer, true, true, null);
 
-        // Only spin up the NRT thread if a writer actually exists
-        if (this.writer != null) {
-            this.nrtThread = new ControlledRealTimeReopenThread<>(writer, searcherManager, 5.0, 0.025);
-            this.nrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName());
-            this.nrtThread.setDaemon(true);
-            this.nrtThread.start();
-        }
+        this.nrtThread = new ControlledRealTimeReopenThread<>(writer, searcherManager, 5.0, 0.025);
+        this.nrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName());
+        this.nrtThread.setDaemon(true);
+        this.nrtThread.start();
     }
+
     // This is basically a utility
     public IndexWriter createTemporaryRebuildWriter(String timestamp,
-                                                     Analyzer analyzer) throws IOException {
+                                                    Analyzer analyzer) throws IOException {
         Path newPath = rootDir.resolve(timestamp);
         IndexWriterConfig config = new IndexWriterConfig(analyzer);
         return new IndexWriter(FSDirectory.open(newPath), config);
@@ -79,10 +84,15 @@ public class BaseLuceneIndex {
     }
 
     private String readCurrentDirectoryName() throws IOException {
+        if (Files.notExists(iniPath)) {
+            return null;
+        }
+
         Properties props = new Properties();
         try (InputStream is = Files.newInputStream(iniPath)) {
             props.load(is);
         }
+
         return props.getProperty("current");
     }
 
@@ -90,12 +100,20 @@ public class BaseLuceneIndex {
         Properties props = new Properties();
         props.setProperty("current", timestamp);
         try (OutputStream os = Files.newOutputStream(iniPath)) {
-            props.store(os, "Lucene Index Tracking");
+            props.store(os, null);
         }
     }
 
 
-    public IndexWriter getWriter() { return writer; }
-    public SearcherManager getSearcherManager() { return searcherManager; }
-    public ControlledRealTimeReopenThread<IndexSearcher> getNrtThread() { return nrtThread; }
+    public IndexWriter getWriter() {
+        return writer;
+    }
+
+    public SearcherManager getSearcherManager() {
+        return searcherManager;
+    }
+
+    public ControlledRealTimeReopenThread<IndexSearcher> getNrtThread() {
+        return nrtThread;
+    }
 }

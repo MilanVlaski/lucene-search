@@ -26,7 +26,7 @@ public class LoadIndexes {
         var addressIndex = new EmailAddressIndex(new BaseLuceneIndex(Path.of("indexes/email-addresses")));
         var emailIndex = new EmailIndex(new BaseLuceneIndex(Path.of("indexes/emails")));
 
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd.HH.mm.ss"));
+        String timestamp = LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT);
 
         // Local state tracking for in-memory deduplication (Flat & Safe)
         var seenAddresses = new HashSet<String>();
