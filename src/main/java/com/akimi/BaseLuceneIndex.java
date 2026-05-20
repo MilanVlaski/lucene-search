@@ -32,6 +32,12 @@ public class BaseLuceneIndex {
         this.iniPath = rootDir.resolve("index.ini");
     }
 
+    private record EngineTriple(
+        IndexWriter writer,
+        SearcherManager searcherManager,
+        ControlledRealTimeReopenThread<IndexSearcher> nrtThread
+    ) {}
+
     public synchronized void init(Analyzer analyzer) throws IOException {
         String currentDirName = readCurrentDirectoryName();
         if(currentDirName.isBlank()) {
@@ -39,21 +45,28 @@ public class BaseLuceneIndex {
         }
         currentDirName = readCurrentDirectoryName();
 
+        assert currentDirName != null;
         Path indexPath = rootDir.resolve(currentDirName);
 
         Files.createDirectories(indexPath);
 
-        // Open an un-locked FSDirectory
-        var dir = FSDirectory.open(indexPath);
-        var config = new IndexWriterConfig(analyzer);
 
-        this.writer = new IndexWriter(dir, config);
-        this.searcherManager = new SearcherManager(writer, true, true, null);
+        EngineTriple triple = createEngineTriple(indexPath, analyzer);
+        this.writer = triple.writer();
+        this.searcherManager = triple.searcherManager();
+        this.nrtThread = triple.nrtThread();
+    }
 
-        this.nrtThread = new ControlledRealTimeReopenThread<>(writer, searcherManager, 5.0, 0.025);
-        this.nrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName());
-        this.nrtThread.setDaemon(true);
-        this.nrtThread.start();
+    private EngineTriple createEngineTriple(Path indexPath, Analyzer analyzer) throws IOException {
+        IndexWriter newWriter = new IndexWriter(FSDirectory.open(indexPath), new IndexWriterConfig(analyzer));
+        SearcherManager newSearcherManager = new SearcherManager(newWriter, true, true, null);
+
+        var newNrtThread = new ControlledRealTimeReopenThread<>(newWriter, newSearcherManager, 5.0, 0.025);
+        newNrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName() + "-" + indexPath.getFileName());
+        newNrtThread.setDaemon(true);
+        newNrtThread.start();
+
+        return new EngineTriple(newWriter, newSearcherManager, newNrtThread);
     }
 
     // This is basically a utility
@@ -65,22 +78,39 @@ public class BaseLuceneIndex {
     }
 
     public synchronized void switchToNewIndex(String timestamp, Analyzer analyzer) throws IOException {
-        // 1. Stop the background refresh thread first
-        if (nrtThread != null) {
-            nrtThread.close();
-            nrtThread.interrupt();
-        }
-        // 2. Release readers
-        if (searcherManager != null) {
-            searcherManager.close();
-        }
-        // 3. Commit and close the old disk writer
-        if (writer != null) {
-            writer.close();
-        }
+        Path indexPath = rootDir.resolve(timestamp);
+        Files.createDirectories(indexPath);
+
+        // 1. Build the new triple in complete isolation
+        EngineTriple newTriple = createEngineTriple(indexPath, analyzer);
+
+        // 2. Capture the old references for cleanup
+        IndexWriter oldWriter = this.writer;
+        SearcherManager oldSearcherManager = this.searcherManager;
+        ControlledRealTimeReopenThread<IndexSearcher> oldNrtThread = this.nrtThread;
+
+        // 3. Instant atomic swap
+        this.writer = newTriple.writer();
+        this.searcherManager = newTriple.searcherManager();
+        this.nrtThread = newTriple.nrtThread();
 
         writeCurrentDirectoryName(timestamp);
-        init(analyzer);
+
+        // 4. Safe background deallocation of old resources
+        if (oldNrtThread != null) {
+            oldNrtThread.close();
+            oldNrtThread.interrupt();
+        }
+        if (oldSearcherManager != null) {
+            oldSearcherManager.close();
+        }
+        if (oldWriter != null) {
+            var oldDir = oldWriter.getDirectory();
+            oldWriter.close();
+            if (oldDir != null) {
+                oldDir.close();
+            }
+        }
     }
 
     private String readCurrentDirectoryName() throws IOException {
