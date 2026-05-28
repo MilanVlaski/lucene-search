@@ -14,11 +14,11 @@ import java.util.*;
 import java.util.function.Consumer;
 
 public class EmailAddressIndex {
-    private final BaseLuceneIndex storage;
+    private final BaseLuceneIndex index;
     private final Analyzer analyzer;
 
-    public EmailAddressIndex(BaseLuceneIndex storage) {
-        this.storage = storage;
+    public EmailAddressIndex(BaseLuceneIndex index) {
+        this.index = index;
 
         Analyzer addressSearchAnalyzer = new Analyzer() {
             @Override
@@ -38,18 +38,18 @@ public class EmailAddressIndex {
     }
 
     public void start() throws IOException {
-        storage.init(new IndexWriterConfig(analyzer));
+        index.init(new IndexWriterConfig(analyzer));
     }
 
     public void update(String address, boolean immediate) throws IOException,
         InterruptedException {
         // Exact term match on the StringField works perfectly now
-        storage.updateDocument(document(address), false,
+        index.updateDocument(document(address), false,
             new Term("address", address));
     }
 
     public void add(String address, boolean immediate) throws IOException, InterruptedException {
-        storage.addDocument(document(address), immediate);
+        index.addDocument(document(address), immediate);
     }
 
     public static Document document(String address) {
@@ -66,7 +66,7 @@ public class EmailAddressIndex {
     // Write operations gotta be controlled by the base class
     // TODO queue deletes and adds if we're currently rebuilding
     public void delete(String address) throws IOException {
-        storage.deleteDocument(new Term("address", address));
+        index.deleteDocument(new Term("address", address));
     }
 
     public List<String> autocompleteAddress(String address, int limit) throws IOException {
@@ -74,7 +74,7 @@ public class EmailAddressIndex {
         Query query = new TermQuery(new Term("address_search", address.toLowerCase().trim()));
         List<String> results = new ArrayList<>();
 
-        SearcherManager manager = storage.getSearcherManager();
+        SearcherManager manager = index.getSearcherManager();
         IndexSearcher searcher = manager.acquire();
         try {
             TopDocs hits = searcher.search(query, limit);
@@ -89,7 +89,7 @@ public class EmailAddressIndex {
         return results;
     }
 
-    public void startReload(Consumer<BaseLuceneIndex.EngineTriple> rebuilder) {
-        storage.startReload(rebuilder, new IndexWriterConfig(analyzer));
+    public void startReload(Consumer<BaseLuceneIndex.LuceneEngine> rebuilder) {
+        index.startReload(rebuilder, new IndexWriterConfig(analyzer));
     }
 }

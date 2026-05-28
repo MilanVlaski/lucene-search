@@ -40,7 +40,7 @@ public class BaseLuceneIndex {
     private final Path iniPath;
 
 
-    private volatile EngineTriple engineTriple;
+    private volatile LuceneEngine engine;
 
     private List<Document> writesQueue;
     // You can delete either by term or query. Abstraction is leaking.
@@ -56,7 +56,7 @@ public class BaseLuceneIndex {
         this.iniPath = rootDir.resolve("index.ini");
     }
 
-    public record EngineTriple(
+    public record LuceneEngine(
         IndexWriter writer,
         SearcherManager searcherManager,
         ControlledRealTimeReopenThread<IndexSearcher> nrtThread
@@ -93,10 +93,10 @@ public class BaseLuceneIndex {
         Files.createDirectories(indexPath);
 
 
-        this.engineTriple = createEngineTriple(indexPath, writerConfig);
+        this.engine = createEngineTriple(indexPath, writerConfig);
     }
 
-    private EngineTriple createEngineTriple(Path indexPath, IndexWriterConfig writerConfig) throws IOException {
+    private LuceneEngine createEngineTriple(Path indexPath, IndexWriterConfig writerConfig) throws IOException {
         IndexWriter newWriter = new IndexWriter(FSDirectory.open(indexPath), writerConfig);
         SearcherManager newSearcherManager = new SearcherManager(newWriter, true, true, null);
 
@@ -106,16 +106,16 @@ public class BaseLuceneIndex {
         newNrtThread.setDaemon(true);
         newNrtThread.start();
 
-        return new EngineTriple(newWriter, newSearcherManager, newNrtThread);
+        return new LuceneEngine(newWriter, newSearcherManager, newNrtThread);
     }
 
     private synchronized void switchToNewIndex(String timestamp,
-                                         EngineTriple newTriple) throws IOException {
+                                         LuceneEngine newTriple) throws IOException {
         Path indexPath = rootDir.resolve(timestamp);
         Files.createDirectories(indexPath);
 
-        var oldTriple = this.engineTriple;
-        this.engineTriple = newTriple;
+        var oldTriple = this.engine;
+        this.engine = newTriple;
         writeCurrentDirectoryName(timestamp);
 
         if(oldTriple != null) {
@@ -175,7 +175,7 @@ public class BaseLuceneIndex {
         getWriter().deleteDocuments(term);
     }
 
-    public void startReload(Consumer<EngineTriple> rebuilder, IndexWriterConfig writerConfig) {
+    public void startReload(Consumer<LuceneEngine> rebuilder, IndexWriterConfig writerConfig) {
         try {
             String timestamp = LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT);
             Path indexPath = rootDir.resolve(timestamp);
@@ -217,14 +217,14 @@ public class BaseLuceneIndex {
     }
 
     private IndexWriter getWriter() {
-        return engineTriple.writer();
+        return engine.writer();
     }
 
     public SearcherManager getSearcherManager() {
-        return engineTriple.searcherManager();
+        return engine.searcherManager();
     }
 
     private ControlledRealTimeReopenThread<IndexSearcher> getNrtThread() {
-        return engineTriple.nrtThread();
+        return engine.nrtThread();
     }
 }

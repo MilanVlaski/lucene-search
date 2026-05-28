@@ -10,21 +10,21 @@ import java.io.IOException;
 import java.util.function.Consumer;
 
 public class EmailIndex {
-    private final BaseLuceneIndex storage;
+    private final BaseLuceneIndex index;
     private final Analyzer analyzer;
 
-    public EmailIndex(BaseLuceneIndex storage) {
-        this.storage = storage;
+    public EmailIndex(BaseLuceneIndex index) {
+        this.index = index;
         this.analyzer = new StandardAnalyzer();
     }
 
     public void start() throws IOException {
-        storage.init(new IndexWriterConfig(analyzer));
+        index.init(new IndexWriterConfig(analyzer));
     }
 
     public void add(String id, String body, boolean immediate) throws IOException, InterruptedException {
         Document doc = document(id, body);
-        storage.addDocument(doc, immediate);
+        index.addDocument(doc, immediate);
     }
 
     public static Document document(String id, String body) {
@@ -35,11 +35,11 @@ public class EmailIndex {
     }
 
     public void delete(String id) throws IOException {
-        storage.deleteDocument(new Term("id", id));
+        index.deleteDocument(new Term("id", id));
     }
 
     public TopDocs search(Query query, int limit) throws IOException {
-        SearcherManager manager = storage.getSearcherManager();
+        SearcherManager manager = index.getSearcherManager();
         IndexSearcher searcher = manager.acquire();
         try {
             return searcher.search(query, limit);
@@ -48,8 +48,8 @@ public class EmailIndex {
         }
     }
 
-    public void startReload(Consumer<BaseLuceneIndex.EngineTriple> rebuilder) {
-        storage.startReload(rebuilder, new IndexWriterConfig(analyzer));
+    public void startReload(Consumer<BaseLuceneIndex.LuceneEngine> rebuilder) {
+        index.startReload(rebuilder, new IndexWriterConfig(analyzer));
     }
 
 }
