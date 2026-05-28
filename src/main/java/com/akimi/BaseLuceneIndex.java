@@ -1,8 +1,7 @@
 package com.akimi;
 
-import org.apache.lucene.analysis.Analyzer;
-import org.apache.lucene.index.IndexWriter;
-import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.index.*;
 import org.apache.lucene.search.*;
 import org.apache.lucene.store.FSDirectory;
 
@@ -11,10 +10,27 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Properties;
+import java.util.*;
+import java.util.function.Consumer;
 
-/*
-    Holds an IndexWriter for persistent reads.
+/**
+ * Explanation why volatile is sufficient:
+ * Volatile is sufficient because you are dealing with a single-writer,
+ * multi-reader problem.
+ * <ul>
+ * <li>
+ * Synchronized protects actions (mutation): It forces threads to take turns
+ * .volatile is sufficient because you are dealing with a single-writer,
+ * multi-reader problem.
+ * </li>
+ * <li>
+ * Volatile protects visibility (reading): It does not lock
+ * anything. Instead, it tells the JVM that this variable can change
+ * at any moment. Whenever the background thread updates the reference,
+ * all reading threads instantly see the new reference instead of a
+ * cached, old one.
+ * </li>
+ * </ul>
  */
 public class BaseLuceneIndex {
     public static final DateTimeFormatter DIRECTORY_FORMAT =
@@ -23,24 +39,50 @@ public class BaseLuceneIndex {
     private final Path rootDir;
     private final Path iniPath;
 
-    private IndexWriter writer;
-    private SearcherManager searcherManager;
-    private ControlledRealTimeReopenThread<IndexSearcher> nrtThread;
 
+    private volatile EngineTriple engineTriple;
+
+    private List<Document> writesQueue;
+    // You can delete either by term or query. Abstraction is leaking.
+    private List<Term> deleteQueue;
+
+    /**
+     * Expects an existing index.ini file at the {@link #rootDir}.
+     *
+     * @param rootDir
+     */
     public BaseLuceneIndex(Path rootDir) {
         this.rootDir = rootDir;
         this.iniPath = rootDir.resolve("index.ini");
     }
 
-    private record EngineTriple(
+    public record EngineTriple(
         IndexWriter writer,
         SearcherManager searcherManager,
         ControlledRealTimeReopenThread<IndexSearcher> nrtThread
-    ) {}
+    ) implements Closeable{
+        @Override
+        public void close() throws IOException {
+            if (nrtThread != null) {
+                nrtThread.close();
+                nrtThread.interrupt();
+            }
+            if (searcherManager != null) {
+                searcherManager.close();
+            }
+            if (writer != null) {
+                var oldDir = writer.getDirectory();
+                writer.close();
+                if (oldDir != null) {
+                    oldDir.close();
+                }
+            }
+        }
+    }
 
-    public synchronized void init(Analyzer analyzer) throws IOException {
+    public synchronized void init(IndexWriterConfig writerConfig) throws IOException {
         String currentDirName = readCurrentDirectoryName();
-        if(currentDirName.isBlank()) {
+        if (currentDirName.isBlank()) {
             writeCurrentDirectoryName(LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT));
         }
         currentDirName = readCurrentDirectoryName();
@@ -51,65 +93,34 @@ public class BaseLuceneIndex {
         Files.createDirectories(indexPath);
 
 
-        EngineTriple triple = createEngineTriple(indexPath, analyzer);
-        this.writer = triple.writer();
-        this.searcherManager = triple.searcherManager();
-        this.nrtThread = triple.nrtThread();
+        this.engineTriple = createEngineTriple(indexPath, writerConfig);
     }
 
-    private EngineTriple createEngineTriple(Path indexPath, Analyzer analyzer) throws IOException {
-        IndexWriter newWriter = new IndexWriter(FSDirectory.open(indexPath), new IndexWriterConfig(analyzer));
+    private EngineTriple createEngineTriple(Path indexPath, IndexWriterConfig writerConfig) throws IOException {
+        IndexWriter newWriter = new IndexWriter(FSDirectory.open(indexPath), writerConfig);
         SearcherManager newSearcherManager = new SearcherManager(newWriter, true, true, null);
 
         var newNrtThread = new ControlledRealTimeReopenThread<>(newWriter, newSearcherManager, 5.0, 0.025);
-        newNrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName() + "-" + indexPath.getFileName());
+        newNrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName() + "-"
+            + indexPath.getFileName());
         newNrtThread.setDaemon(true);
         newNrtThread.start();
 
         return new EngineTriple(newWriter, newSearcherManager, newNrtThread);
     }
 
-    // This is basically a utility
-    public IndexWriter createTemporaryRebuildWriter(String timestamp,
-                                                    Analyzer analyzer) throws IOException {
-        Path newPath = rootDir.resolve(timestamp);
-        IndexWriterConfig config = new IndexWriterConfig(analyzer);
-        return new IndexWriter(FSDirectory.open(newPath), config);
-    }
-
-    public synchronized void switchToNewIndex(String timestamp, Analyzer analyzer) throws IOException {
+    private synchronized void switchToNewIndex(String timestamp,
+                                         EngineTriple newTriple) throws IOException {
         Path indexPath = rootDir.resolve(timestamp);
         Files.createDirectories(indexPath);
 
-        // 1. Build the new triple in complete isolation
-        EngineTriple newTriple = createEngineTriple(indexPath, analyzer);
-
-        // 2. Capture the old references for cleanup
-        IndexWriter oldWriter = this.writer;
-        SearcherManager oldSearcherManager = this.searcherManager;
-        ControlledRealTimeReopenThread<IndexSearcher> oldNrtThread = this.nrtThread;
-
-        // 3. Instant atomic swap
-        this.writer = newTriple.writer();
-        this.searcherManager = newTriple.searcherManager();
-        this.nrtThread = newTriple.nrtThread();
-
+        var oldTriple = this.engineTriple;
+        this.engineTriple = newTriple;
         writeCurrentDirectoryName(timestamp);
 
-        // 4. Safe background deallocation of old resources
-        if (oldNrtThread != null) {
-            oldNrtThread.close();
-            oldNrtThread.interrupt();
-        }
-        if (oldSearcherManager != null) {
-            oldSearcherManager.close();
-        }
-        if (oldWriter != null) {
-            var oldDir = oldWriter.getDirectory();
-            oldWriter.close();
-            if (oldDir != null) {
-                oldDir.close();
-            }
+        if(oldTriple != null) {
+            // may be null if init was never called
+            oldTriple.close();
         }
     }
 
@@ -134,16 +145,86 @@ public class BaseLuceneIndex {
         }
     }
 
+    public synchronized void addDocument(Document doc, boolean immediate) throws IOException, InterruptedException {
+        if (writesQueue != null) {
+            writesQueue.add(doc);
+        }
 
-    public IndexWriter getWriter() {
-        return writer;
+        long gen = getWriter().addDocument(doc);
+        if (immediate) {
+            getNrtThread().waitForGeneration(gen);
+        }
+    }
+
+    public synchronized void updateDocument(Document doc,
+                                            boolean immediate, Term term) throws IOException, InterruptedException {
+        if (writesQueue != null) {
+            writesQueue.add(doc);
+        }
+
+        long gen = getWriter().updateDocument(term, doc);
+        if (immediate) {
+            getNrtThread().waitForGeneration(gen);
+        }
+    }
+
+    public synchronized void deleteDocument(Term term) throws IOException {
+        if (deleteQueue != null) {
+            deleteQueue.add(term);
+        }
+        getWriter().deleteDocuments(term);
+    }
+
+    public void startReload(Consumer<EngineTriple> rebuilder, IndexWriterConfig writerConfig) {
+        try {
+            String timestamp = LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT);
+            Path indexPath = rootDir.resolve(timestamp);
+
+            synchronized (this) {
+                writesQueue = new ArrayList<>();
+                deleteQueue = new ArrayList<>();
+            }
+
+            var triple = createEngineTriple(indexPath, writerConfig);
+
+            rebuilder.accept(triple);
+
+            var localWriteQueue = writesQueue;
+            List<Term> localDeleteQueue = deleteQueue;
+
+            synchronized (this) {
+                switchToNewIndex(timestamp, triple);
+                writesQueue = null;
+                deleteQueue = null;
+            }
+
+            for (Document doc : localWriteQueue) {
+                addDocument(doc, false);
+            }
+            for (Term term : localDeleteQueue) {
+                deleteDocument(term);
+            }
+
+        } catch (IOException | InterruptedException e) {
+            throw new RuntimeException(e);
+        } finally {
+            synchronized (this) {
+                writesQueue = null;
+                deleteQueue = null;
+            }
+        }
+
+    }
+
+    private IndexWriter getWriter() {
+        return engineTriple.writer();
     }
 
     public SearcherManager getSearcherManager() {
-        return searcherManager;
+        return engineTriple.searcherManager();
     }
 
-    public ControlledRealTimeReopenThread<IndexSearcher> getNrtThread() {
-        return nrtThread;
+    private ControlledRealTimeReopenThread<IndexSearcher> getNrtThread() {
+        return engineTriple.nrtThread();
     }
 }

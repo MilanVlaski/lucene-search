@@ -7,15 +7,12 @@ import org.apache.lucene.index.IndexWriter;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.HashSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * This class loads the enron dataset, and can serve as an example of how to
- * reload an index.
+ * Loads the Enron dataset using the encapsulated startReload architecture.
  */
 public class LoadIndexes {
 
@@ -26,55 +23,56 @@ public class LoadIndexes {
         var addressIndex = new EmailAddressIndex(new BaseLuceneIndex(Path.of("indexes/email-addresses")));
         var emailIndex = new EmailIndex(new BaseLuceneIndex(Path.of("indexes/emails")));
 
-        String timestamp = LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT);
+        System.out.println("Starting bulk address index reload...");
+        addressIndex.startReload(triple -> {
+            IndexWriter addressWriter = triple.writer();
+            var seenAddresses = new HashSet<String>();
 
-        // Local state tracking for in-memory deduplication (Flat & Safe)
-        var seenAddresses = new HashSet<String>();
+            try (CsvReader<NamedCsvRecord> csv = CsvReader.builder().ofNamedCsvRecord(Path.of("emails.csv"))) {
+                for (NamedCsvRecord rec : csv) {
+                    String message = rec.getField("message");
+                    if (message == null || message.isBlank()) continue;
 
-        // FIX 1: Wrap writers in try-with-resources to guarantee safe close/lock release on failure
-        try (
-            IndexWriter addressWriter = addressIndex.createTemporaryRebuildWriter(timestamp);
-            IndexWriter emailWriter = emailIndex.createTemporaryRebuildWriter(timestamp);
-            CsvReader<NamedCsvRecord> csv = CsvReader.builder().ofNamedCsvRecord(Path.of("emails.csv"))
-        ) {
+                    String headers = isolateHeaders(message);
+                    String address = parseAddress(headers);
 
-            for (NamedCsvRecord rec : csv) {
-                var message = rec.getField("message");
-                if (message == null || message.isBlank()) continue;
-
-                // FIX 2: Isolate headers before running regex to save CPU
-                int headerEnd = message.indexOf("\n\n");
-                if (headerEnd == -1) headerEnd = message.indexOf("\r\n\r\n");
-                String headers = (headerEnd != -1) ? message.substring(0, headerEnd) : message;
-
-                var id = parseMessageId(headers);
-                emailWriter.addDocument(EmailIndex.document(id, message));
-
-                var address = parseAddress(headers);
-
-                // FIX 3: Use fast HashSet check + addDocument instead of costly updateDocument
-                if (seenAddresses.add(address)) {
-                    addressWriter.addDocument(EmailAddressIndex.document(address));
+                    if (seenAddresses.add(address)) {
+                        addressWriter.addDocument(EmailAddressIndex.document(address));
+                    }
                 }
+                addressWriter.commit();
+            } catch (IOException e) {
+                throw new RuntimeException("Address indexing failed", e);
             }
+        });
 
-            // FIX 4: Explicitly commit data to disk segments
-            addressWriter.commit();
-            emailWriter.commit();
+        System.out.println("Starting bulk email index reload...");
+        emailIndex.startReload(triple -> {
+            IndexWriter emailWriter = triple.writer();
 
+            try (CsvReader<NamedCsvRecord> csv = CsvReader.builder().ofNamedCsvRecord(Path.of("emails.csv"))) {
+                for (NamedCsvRecord rec : csv) {
+                    String message = rec.getField("message");
+                    if (message == null || message.isBlank()) continue;
 
+                    String headers = isolateHeaders(message);
+                    String id = parseMessageId(headers);
 
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to execute index bulk reload", e);
-        }
-        // FIX 5: Execute the atomic cutover for live readers
-        try {
-            addressIndex.switchToNewIndex(timestamp);
-            emailIndex.switchToNewIndex(timestamp);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-        System.out.println("Rebuild complete. Swapped to: " + timestamp);
+                    emailWriter.addDocument(EmailIndex.document(id, message));
+                }
+                emailWriter.commit();
+            } catch (IOException e) {
+                throw new RuntimeException("Email indexing failed", e);
+            }
+        });
+
+        System.out.println("Bulk reload complete. Live index readers swapped successfully.");
+    }
+
+    private static String isolateHeaders(String message) {
+        int headerEnd = message.indexOf("\n\n");
+        if (headerEnd == -1) headerEnd = message.indexOf("\r\n\r\n");
+        return (headerEnd != -1) ? message.substring(0, headerEnd) : message;
     }
 
     private static String parseMessageId(String headers) {

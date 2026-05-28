@@ -6,12 +6,12 @@ import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.ngram.EdgeNGramTokenFilter;
 import org.apache.lucene.document.*;
-import org.apache.lucene.index.IndexWriter;
-import org.apache.lucene.index.Term;
+import org.apache.lucene.index.*;
 import org.apache.lucene.search.*;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.function.Consumer;
 
 public class EmailAddressIndex {
     private final BaseLuceneIndex storage;
@@ -38,24 +38,18 @@ public class EmailAddressIndex {
     }
 
     public void start() throws IOException {
-        storage.init(analyzer);
+        storage.init(new IndexWriterConfig(analyzer));
     }
 
-    public void addOrUpdate(String address, boolean immediate) throws IOException, InterruptedException {
-        var doc = document(address);
+    public void update(String address, boolean immediate) throws IOException,
+        InterruptedException {
         // Exact term match on the StringField works perfectly now
-        long gen = storage.getWriter().updateDocument(new Term("address", address), doc);
-        if (immediate) {
-            storage.getNrtThread().waitForGeneration(gen);
-        }
+        storage.updateDocument(document(address), false,
+            new Term("address", address));
     }
 
     public void add(String address, boolean immediate) throws IOException, InterruptedException {
-        Document doc = document(address);
-        long gen = storage.getWriter().addDocument(doc);
-        if (immediate) {
-            storage.getNrtThread().waitForGeneration(gen);
-        }
+        storage.addDocument(document(address), immediate);
     }
 
     public static Document document(String address) {
@@ -67,8 +61,12 @@ public class EmailAddressIndex {
         return doc;
     }
 
+    // TODO control shouldn't leave the base class
+    // Only search may be outside the base class!
+    // Write operations gotta be controlled by the base class
+    // TODO queue deletes and adds if we're currently rebuilding
     public void delete(String address) throws IOException {
-        storage.getWriter().deleteDocuments(new Term("address", address));
+        storage.deleteDocument(new Term("address", address));
     }
 
     public List<String> autocompleteAddress(String address, int limit) throws IOException {
@@ -91,11 +89,7 @@ public class EmailAddressIndex {
         return results;
     }
 
-    public IndexWriter createTemporaryRebuildWriter(String timestamp) throws IOException {
-        return storage.createTemporaryRebuildWriter(timestamp, analyzer);
-    }
-
-    public void switchToNewIndex(String timestamp) throws IOException {
-        storage.switchToNewIndex(timestamp, analyzer);
+    public void startReload(Consumer<BaseLuceneIndex.EngineTriple> rebuilder) {
+        storage.startReload(rebuilder, new IndexWriterConfig(analyzer));
     }
 }

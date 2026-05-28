@@ -3,11 +3,11 @@ package com.akimi;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.*;
-import org.apache.lucene.index.IndexWriter;
-import org.apache.lucene.index.Term;
+import org.apache.lucene.index.*;
 import org.apache.lucene.search.*;
 
 import java.io.IOException;
+import java.util.function.Consumer;
 
 public class EmailIndex {
     private final BaseLuceneIndex storage;
@@ -19,16 +19,12 @@ public class EmailIndex {
     }
 
     public void start() throws IOException {
-        storage.init(analyzer);
+        storage.init(new IndexWriterConfig(analyzer));
     }
 
     public void add(String id, String body, boolean immediate) throws IOException, InterruptedException {
         Document doc = document(id, body);
-
-        long gen = storage.getWriter().addDocument(doc);
-        if (immediate) {
-            storage.getNrtThread().waitForGeneration(gen);
-        }
+        storage.addDocument(doc, immediate);
     }
 
     public static Document document(String id, String body) {
@@ -39,7 +35,7 @@ public class EmailIndex {
     }
 
     public void delete(String id) throws IOException {
-        storage.getWriter().deleteDocuments(new Term("id", id));
+        storage.deleteDocument(new Term("id", id));
     }
 
     public TopDocs search(Query query, int limit) throws IOException {
@@ -52,12 +48,8 @@ public class EmailIndex {
         }
     }
 
-    public IndexWriter createTemporaryRebuildWriter(String timestamp) throws IOException {
-        return storage.createTemporaryRebuildWriter(timestamp, analyzer);
-    }
-
-    public void switchToNewIndex(String timestamp) throws IOException {
-        storage.switchToNewIndex(timestamp, analyzer);
+    public void startReload(Consumer<BaseLuceneIndex.EngineTriple> rebuilder) {
+        storage.startReload(rebuilder, new IndexWriterConfig(analyzer));
     }
 
 }
