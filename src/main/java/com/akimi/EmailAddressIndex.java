@@ -92,4 +92,8 @@ public class EmailAddressIndex {
     public void startReload(Consumer<BaseLuceneIndex.LuceneEngine> rebuilder) {
         index.startReload(rebuilder, new IndexWriterConfig(analyzer));
     }
+
+    public void commit() throws IOException {
+        index.commit();
+    }
 }

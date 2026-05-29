@@ -233,6 +233,10 @@ public class BaseLuceneIndex {
 
     }
 
+    public void commit() throws IOException {
+        getWriter().commit();
+    }
+
     private IndexWriter getWriter() {
         return engine.writer();
     }

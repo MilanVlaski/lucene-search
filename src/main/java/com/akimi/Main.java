@@ -1,5 +1,6 @@
 package com.akimi;
 
+import com.akimi.util.LoadIndexes;
 import org.w3c.dom.Text;
 
 import javax.management.Query;
@@ -27,6 +28,8 @@ public class Main {
                     System.out.println("1. Search for email address");
                     System.out.println("2. Add email address");
                     System.out.println("3. Delete email address");
+                    System.out.println("4. Reload index - email addresses");
+                    System.out.println("5. Commit - address index");
 //                    System.out.println("4. Search for email");
                     System.out.println("0. Exit");
                     System.out.print("Enter choice: ");
@@ -47,6 +50,11 @@ public class Main {
                         case 1 -> handleSearchAddress(scanner, addressIndex);
                         case 2 -> handleAddAddress(scanner, addressIndex);
                         case 3 -> handleDeleteAddress(scanner, addressIndex);
+                        case 4 -> backgroundReload(addressIndex);
+                        case 5 -> addressIndex.commit();
+                        case 6 -> {
+
+                        }
 //                        case 4 -> handleSearchEmail(scanner, emailIndex);
                         default -> System.out.println("Unknown option.");
                     }
@@ -54,6 +62,20 @@ public class Main {
             }
         } catch (IOException | InterruptedException e) {
             throw new RuntimeException("Index operation failed", e);
+        }
+    }
+
+    private static void backgroundReload(EmailAddressIndex addressIndex) {
+        {
+            System.out.println("Reloading index in the background...");
+            new Thread(() -> {
+                try {
+                    LoadIndexes.reloadEmailAddressIndex(addressIndex);
+                    System.out.println("\n[Success] Email address index reload complete!");
+                } catch (Exception e) {
+                    System.err.println("\n[Error] Failed to reload email address index: " + e.getMessage());
+                }
+            }).start();
         }
     }
 
