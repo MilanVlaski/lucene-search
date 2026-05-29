@@ -92,17 +92,32 @@ public class BaseLuceneIndex {
         this.engine = createEngineTriple(indexPath, writerConfig);
     }
 
+    //
     private LuceneEngine createEngineTriple(Path indexPath, IndexWriterConfig writerConfig) throws IOException {
+        // Open the writer first
         IndexWriter newWriter = new IndexWriter(FSDirectory.open(indexPath), writerConfig);
-        SearcherManager newSearcherManager = new SearcherManager(newWriter, true, true, null);
+        try {
+            // Open the searcher manager next
+            SearcherManager newSearcherManager = new SearcherManager(newWriter, true, true, null);
+            try {
+                ControlledRealTimeReopenThread<IndexSearcher> newNrtThread =
+                    new ControlledRealTimeReopenThread<>(newWriter, newSearcherManager, 5.0, 0.025);
 
-        var newNrtThread = new ControlledRealTimeReopenThread<>(newWriter, newSearcherManager, 5.0, 0.025);
-        newNrtThread.setName("Lucene-NRT-Thread-" + rootDir.getFileName() + "-"
-            + indexPath.getFileName());
-        newNrtThread.setDaemon(true);
-        newNrtThread.start();
+                newNrtThread.setName("Lucene-NRT-" + rootDir.getFileName());
+                newNrtThread.setDaemon(true);
+                newNrtThread.start();
 
-        return new LuceneEngine(newWriter, newSearcherManager, newNrtThread);
+                // Success: Ownership transferred to LuceneEngine
+                return new LuceneEngine(newWriter, newSearcherManager, newNrtThread);
+
+            } catch (Throwable t) {
+                newSearcherManager.close();
+                throw t;
+            }
+        } catch (Throwable t) {
+            newWriter.close();
+            throw t;
+        }
     }
 
     private synchronized void switchToNewIndex(String timestamp,
