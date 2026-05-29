@@ -1,2 +1,1 @@
-- [ ] Create a list of "EmailAddress" Documents and Email Documents, as a 
-  sort of callback, or array passed into the ""
+- [ ] Code review with the AI at https://gemini.google.com/app/4ef06421a70acc5d

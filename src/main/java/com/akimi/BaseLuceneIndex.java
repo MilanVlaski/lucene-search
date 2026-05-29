@@ -42,7 +42,7 @@ public class BaseLuceneIndex {
 
     private volatile LuceneEngine engine;
 
-    private List<Document> writesQueue;
+    private List<Document> writeQueue;
     // You can delete either by term or query. Abstraction is leaking.
     private List<Term> deleteQueue;
 
@@ -71,11 +71,7 @@ public class BaseLuceneIndex {
                 searcherManager.close();
             }
             if (writer != null) {
-                var oldDir = writer.getDirectory();
                 writer.close();
-                if (oldDir != null) {
-                    oldDir.close();
-                }
             }
         }
     }
@@ -146,8 +142,8 @@ public class BaseLuceneIndex {
     }
 
     public synchronized void addDocument(Document doc, boolean immediate) throws IOException, InterruptedException {
-        if (writesQueue != null) {
-            writesQueue.add(doc);
+        if (writeQueue != null) {
+            writeQueue.add(doc);
         }
 
         long gen = getWriter().addDocument(doc);
@@ -158,8 +154,8 @@ public class BaseLuceneIndex {
 
     public synchronized void updateDocument(Document doc,
                                             boolean immediate, Term term) throws IOException, InterruptedException {
-        if (writesQueue != null) {
-            writesQueue.add(doc);
+        if (writeQueue != null) {
+            writeQueue.add(doc);
         }
 
         long gen = getWriter().updateDocument(term, doc);
@@ -175,29 +171,34 @@ public class BaseLuceneIndex {
         getWriter().deleteDocuments(term);
     }
 
+    // Consuming an IndexWriter is enough
     public void startReload(Consumer<LuceneEngine> rebuilder, IndexWriterConfig writerConfig) {
         try {
             String timestamp = LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT);
             Path indexPath = rootDir.resolve(timestamp);
 
             synchronized (this) {
-                writesQueue = new ArrayList<>();
+                writeQueue = new ArrayList<>();
                 deleteQueue = new ArrayList<>();
             }
 
             var triple = createEngineTriple(indexPath, writerConfig);
 
+            // Finishes building the new index
             rebuilder.accept(triple);
 
-            var localWriteQueue = writesQueue;
-            List<Term> localDeleteQueue = deleteQueue;
+            // Make local copy of queue (adds are hitting add)
+            var localWriteQueue = writeQueue;
+            var localDeleteQueue = deleteQueue;
 
             synchronized (this) {
                 switchToNewIndex(timestamp, triple);
-                writesQueue = null;
+                writeQueue = null;
                 deleteQueue = null;
             }
 
+            // If an addDocument happens during this loop, then elements come
+            // out of roder
             for (Document doc : localWriteQueue) {
                 addDocument(doc, false);
             }
@@ -209,7 +210,7 @@ public class BaseLuceneIndex {
             throw new RuntimeException(e);
         } finally {
             synchronized (this) {
-                writesQueue = null;
+                writeQueue = null;
                 deleteQueue = null;
             }
         }

@@ -1,5 +1,8 @@
 package com.akimi;
 
+import org.w3c.dom.Text;
+
+import javax.management.Query;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Scanner;
@@ -95,7 +98,7 @@ public class Main {
             if ("q".equalsIgnoreCase(input)) break;
 
             System.out.println("Searching emails for: " + input);
-            // TODO: index.search(input)
+//             index.search(new Query(), )
         }
     }
 }
