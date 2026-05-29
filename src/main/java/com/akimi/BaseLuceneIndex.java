@@ -60,7 +60,7 @@ public class BaseLuceneIndex {
         IndexWriter writer,
         SearcherManager searcherManager,
         ControlledRealTimeReopenThread<IndexSearcher> nrtThread
-    ) implements Closeable{
+    ) implements Closeable {
         @Override
         public void close() throws IOException {
             if (nrtThread != null) {
@@ -121,7 +121,7 @@ public class BaseLuceneIndex {
     }
 
     private synchronized void switchToNewIndex(String timestamp,
-                                         LuceneEngine newTriple) throws IOException {
+                                               LuceneEngine newTriple) throws IOException {
         Path indexPath = rootDir.resolve(timestamp);
         Files.createDirectories(indexPath);
 
@@ -129,7 +129,7 @@ public class BaseLuceneIndex {
         this.engine = newTriple;
         writeCurrentDirectoryName(timestamp);
 
-        if(oldTriple != null) {
+        if (oldTriple != null) {
             // may be null if init was never called
             oldTriple.close();
         }
@@ -202,24 +202,25 @@ public class BaseLuceneIndex {
             // Finishes building the new index
             rebuilder.accept(triple);
 
-            // Make local copy of queue (adds are hitting add)
-            var localWriteQueue = writeQueue;
-            var localDeleteQueue = deleteQueue;
-
             synchronized (this) {
-                switchToNewIndex(timestamp, triple);
+                var localWriteQueue = writeQueue;
+                var localDeleteQueue = deleteQueue;
+
                 writeQueue = null;
                 deleteQueue = null;
+
+                switchToNewIndex(timestamp, triple);
+
+                for (Document doc : localWriteQueue) {
+                    addDocument(doc, false);
+                }
+                for (Term term : localDeleteQueue) {
+                    deleteDocument(term);
+                }
             }
 
             // If an addDocument happens during this loop, then elements come
-            // out of roder
-            for (Document doc : localWriteQueue) {
-                addDocument(doc, false);
-            }
-            for (Term term : localDeleteQueue) {
-                deleteDocument(term);
-            }
+            // out of order
 
         } catch (IOException | InterruptedException e) {
             throw new RuntimeException(e);
