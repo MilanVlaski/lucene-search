@@ -13,25 +13,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.Consumer;
 
-/**
- * Explanation why volatile is sufficient:
- * Volatile is sufficient because you are dealing with a single-writer,
- * multi-reader problem.
- * <ul>
- * <li>
- * Synchronized protects actions (mutation): It forces threads to take turns
- * .volatile is sufficient because you are dealing with a single-writer,
- * multi-reader problem.
- * </li>
- * <li>
- * Volatile protects visibility (reading): It does not lock
- * anything. Instead, it tells the JVM that this variable can change
- * at any moment. Whenever the background thread updates the reference,
- * all reading threads instantly see the new reference instead of a
- * cached, old one.
- * </li>
- * </ul>
- */
 public class BaseLuceneIndex {
     public static final DateTimeFormatter DIRECTORY_FORMAT =
         DateTimeFormatter.ofPattern("yyyy-MM-dd.HH.mm.ss");
@@ -39,18 +20,9 @@ public class BaseLuceneIndex {
     private final Path rootDir;
     private final Path iniPath;
 
-
     private volatile LuceneEngine engine;
+    private volatile RebuildQueue rebuildQueue;
 
-    private List<Document> writeQueue;
-    // You can delete either by term or query. Abstraction is leaking.
-    private List<Term> deleteQueue;
-
-    /**
-     * Expects an existing index.ini file at the {@link #rootDir}.
-     *
-     * @param rootDir
-     */
     public BaseLuceneIndex(Path rootDir) {
         this.rootDir = rootDir;
         this.iniPath = rootDir.resolve("index.ini");
@@ -61,6 +33,7 @@ public class BaseLuceneIndex {
         SearcherManager searcherManager,
         ControlledRealTimeReopenThread<IndexSearcher> nrtThread
     ) implements Closeable {
+
         @Override
         public void close() throws IOException {
             if (nrtThread != null) {
@@ -76,9 +49,21 @@ public class BaseLuceneIndex {
         }
     }
 
+    public record RebuildQueue(
+        List<Document> addQueue,
+        List<Term> deleteQueue,
+        List<UpdateRec> updateQueue
+    ) {}
+
+    public record UpdateRec(
+        Term term,
+        Document doc
+    ) {}
+
+
     public synchronized void init(IndexWriterConfig writerConfig) throws IOException {
         String currentDirName = readCurrentDirectoryName();
-        if (currentDirName.isBlank()) {
+        if (currentDirName == null || currentDirName.isBlank()) {
             writeCurrentDirectoryName(LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT));
         }
         currentDirName = readCurrentDirectoryName();
@@ -92,7 +77,6 @@ public class BaseLuceneIndex {
         this.engine = createEngineTriple(indexPath, writerConfig);
     }
 
-    //
     private LuceneEngine createEngineTriple(Path indexPath, IndexWriterConfig writerConfig) throws IOException {
         // Open the writer first
         IndexWriter newWriter = new IndexWriter(FSDirectory.open(indexPath), writerConfig);
@@ -107,8 +91,8 @@ public class BaseLuceneIndex {
                 newNrtThread.setDaemon(true);
                 newNrtThread.start();
 
-                // Success: Ownership transferred to LuceneEngine
-                return new LuceneEngine(newWriter, newSearcherManager, newNrtThread);
+                return new LuceneEngine(newWriter, newSearcherManager,
+                    newNrtThread);
 
             } catch (Throwable t) {
                 newSearcherManager.close();
@@ -117,21 +101,6 @@ public class BaseLuceneIndex {
         } catch (Throwable t) {
             newWriter.close();
             throw t;
-        }
-    }
-
-    private synchronized void switchToNewIndex(String timestamp,
-                                               LuceneEngine newTriple) throws IOException {
-        Path indexPath = rootDir.resolve(timestamp);
-        Files.createDirectories(indexPath);
-
-        var oldTriple = this.engine;
-        this.engine = newTriple;
-        writeCurrentDirectoryName(timestamp);
-
-        if (oldTriple != null) {
-            // may be null if init was never called
-            oldTriple.close();
         }
     }
 
@@ -157,80 +126,95 @@ public class BaseLuceneIndex {
     }
 
     public synchronized void addDocument(Document doc, boolean immediate) throws IOException, InterruptedException {
-        if (writeQueue != null) {
-            writeQueue.add(doc);
+        // The rebuild engine is not safe. If it switched between these two
+        // lines, we're in trouble. They must be synchronized, somehow.
+        long gen = engine.writer().addDocument(doc);
+
+        var queue = rebuildQueue;
+        if (queue != null) {
+            // Time capsule: stash it for later catch-up
+            queue.addQueue().add(doc);
         }
 
-        long gen = getWriter().addDocument(doc);
         if (immediate) {
-            getNrtThread().waitForGeneration(gen);
+            engine.nrtThread().waitForGeneration(gen);
         }
     }
 
-    public synchronized void updateDocument(Document doc,
-                                            boolean immediate, Term term) throws IOException, InterruptedException {
-        if (writeQueue != null) {
-            writeQueue.add(doc);
+    public synchronized void updateDocument(Document doc, boolean immediate, Term term) throws IOException, InterruptedException {
+        long gen = engine.writer().updateDocument(term, doc);
+
+        var queue = rebuildQueue;
+        if (queue != null) {
+            queue.updateQueue().add(new UpdateRec(term, doc));
         }
 
-        long gen = getWriter().updateDocument(term, doc);
         if (immediate) {
-            getNrtThread().waitForGeneration(gen);
+            engine.nrtThread().waitForGeneration(gen);
         }
     }
 
     public synchronized void deleteDocument(Term term) throws IOException {
-        if (deleteQueue != null) {
-            deleteQueue.add(term);
+        engine.writer().deleteDocuments(term);
+
+        var queue = rebuildQueue;
+        if (queue != null) {
+            queue.deleteQueue().add(term);
         }
-        getWriter().deleteDocuments(term);
     }
 
-    // Consuming an IndexWriter is enough
     public void startReload(Consumer<LuceneEngine> rebuilder, IndexWriterConfig writerConfig) {
+        LuceneEngine newEngine = null;
+        String timestamp = LocalDateTime.now().format(DIRECTORY_FORMAT);
+        Path indexPath = rootDir.resolve(timestamp);
+
         try {
-            String timestamp = LocalDateTime.now().format(BaseLuceneIndex.DIRECTORY_FORMAT);
-            Path indexPath = rootDir.resolve(timestamp);
+            newEngine = createEngineTriple(indexPath, writerConfig);
 
             synchronized (this) {
-                writeQueue = new ArrayList<>();
-                deleteQueue = new ArrayList<>();
+                this.rebuildQueue = new RebuildQueue(new ArrayList<>(),
+                    new ArrayList<>(), new ArrayList<>());
             }
 
-            var triple = createEngineTriple(indexPath, writerConfig);
+            rebuilder.accept(newEngine);
 
-            // Finishes building the new index
-            rebuilder.accept(triple);
-
-            synchronized (this) {
-                var localWriteQueue = writeQueue;
-                var localDeleteQueue = deleteQueue;
-
-                writeQueue = null;
-                deleteQueue = null;
-
-                switchToNewIndex(timestamp, triple);
-
-                for (Document doc : localWriteQueue) {
-                    addDocument(doc, false);
-                }
-                for (Term term : localDeleteQueue) {
-                    deleteDocument(term);
+            switchToNewIndex(timestamp, newEngine);
+        } catch (Throwable t) {
+            // If the rebuild fails, safely close the aborted engine
+            this.rebuildQueue = null;
+            if (newEngine != null) {
+                try {
+                    newEngine.close();
+                } catch (IOException e) {
+                    // Log or suppress
                 }
             }
-
-            // If an addDocument happens during this loop, then elements come
-            // out of order
-
-        } catch (IOException | InterruptedException e) {
-            throw new RuntimeException(e);
-        } finally {
-            synchronized (this) {
-                writeQueue = null;
-                deleteQueue = null;
-            }
+            throw new RuntimeException("Index reload failed", t);
         }
+    }
 
+    private synchronized void switchToNewIndex(String timestamp, LuceneEngine newEngine) throws IOException {
+        // Writes are stopped, because of the synchronized method, so we're free
+        for (Term term : rebuildQueue.deleteQueue()) {
+            newEngine.writer().deleteDocuments(term);
+        }
+        for (UpdateRec rec : rebuildQueue.updateQueue()) {
+            newEngine.writer().updateDocument(rec.term(), rec.doc());
+        }
+        for (Document doc : rebuildQueue.addQueue()) {
+            newEngine.writer().addDocument(doc);
+        }
+        this.rebuildQueue = null;
+
+        var oldEngine = this.engine;
+
+        this.engine = newEngine;
+        writeCurrentDirectoryName(timestamp);
+
+
+        if (oldEngine != null) {
+            oldEngine.close();
+        }
     }
 
     public void commit() throws IOException {

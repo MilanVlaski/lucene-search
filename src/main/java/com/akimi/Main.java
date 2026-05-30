@@ -65,6 +65,8 @@ public class Main {
         }
     }
 
+    // A more realistic use would be actually reading from a SQL db
+    // and then checking but ehhh.
     private static void backgroundReload(EmailAddressIndex addressIndex) {
         {
             System.out.println("Reloading index in the background...");
