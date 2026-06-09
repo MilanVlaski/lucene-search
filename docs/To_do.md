@@ -1,4 +1,4 @@
-- [ ] Code review with the AI at https://gemini.google.com/app/4ef06421a70acc5d
+- Test new reindex
 
 ## Reason for synchronized rebuild queue assignment
 
