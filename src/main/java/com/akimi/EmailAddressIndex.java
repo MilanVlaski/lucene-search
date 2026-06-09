@@ -44,7 +44,7 @@ public class EmailAddressIndex {
     public void update(String address, boolean immediate) throws IOException,
         InterruptedException {
         // Exact term match on the StringField works perfectly now
-        index.updateDocument(document(address), false,
+        index.updateDocument(document(address), immediate,
             new Term("address", address));
     }
 
@@ -61,10 +61,6 @@ public class EmailAddressIndex {
         return doc;
     }
 
-    // TODO control shouldn't leave the base class
-    // Only search may be outside the base class!
-    // Write operations gotta be controlled by the base class
-    // TODO queue deletes and adds if we're currently rebuilding
     public void delete(String address) throws IOException {
         index.deleteDocument(new Term("address", address));
     }

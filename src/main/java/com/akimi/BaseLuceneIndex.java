@@ -180,8 +180,9 @@ public class BaseLuceneIndex {
 
             switchToNewIndex(timestamp, newEngine);
         } catch (Throwable t) {
-            // If the rebuild fails, safely close the aborted engine
-            this.rebuildQueue = null;
+            synchronized (this) {
+                this.rebuildQueue = null;
+            }
             if (newEngine != null) {
                 try {
                     newEngine.close();
@@ -195,14 +196,15 @@ public class BaseLuceneIndex {
 
     private synchronized void switchToNewIndex(String timestamp, LuceneEngine newEngine) throws IOException {
         // Writes are stopped, because of the synchronized method, so we're free
+        var writer = newEngine.writer();
         for (Term term : rebuildQueue.deleteQueue()) {
-            newEngine.writer().deleteDocuments(term);
+            writer.deleteDocuments(term);
         }
         for (UpdateRec rec : rebuildQueue.updateQueue()) {
-            newEngine.writer().updateDocument(rec.term(), rec.doc());
+            writer.updateDocument(rec.term(), rec.doc());
         }
         for (Document doc : rebuildQueue.addQueue()) {
-            newEngine.writer().addDocument(doc);
+            writer.addDocument(doc);
         }
         this.rebuildQueue = null;
 
