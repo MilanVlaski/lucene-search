@@ -1,9 +1,8 @@
 package com.akimi;
 
 import com.akimi.util.LoadIndexes;
-import org.w3c.dom.Text;
+import com.akimi.util.RebuildSocketListener;
 
-import javax.management.Query;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Scanner;
@@ -17,6 +16,16 @@ public class Main {
         var emailIndex = new EmailIndex(
             new BaseLuceneIndex(Path.of("indexes/emails"))
         );
+
+        var listener = new RebuildSocketListener(
+            "/tmp/rebuild_service.sock",
+            "rebuild",
+            () -> backgroundReload(addressIndex)
+        );
+
+        Thread socketThread = new Thread(listener);
+        socketThread.setDaemon(true); // Allows JVM to shut down cleanly if needed
+        socketThread.start();
 
         try {
             addressIndex.start();
