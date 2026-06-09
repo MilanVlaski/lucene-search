@@ -7,6 +7,7 @@ import org.apache.lucene.index.*;
 import org.apache.lucene.search.*;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.function.Consumer;
 
 public class EmailIndex {
@@ -52,4 +53,7 @@ public class EmailIndex {
         index.startReload(rebuilder, new IndexWriterConfig(analyzer));
     }
 
+    public Path getPath() {
+        return index.getIndexPath();
+    }
 }

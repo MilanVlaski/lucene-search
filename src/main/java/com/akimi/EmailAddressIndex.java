@@ -10,6 +10,7 @@ import org.apache.lucene.index.*;
 import org.apache.lucene.search.*;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -91,5 +92,9 @@ public class EmailAddressIndex {
 
     public void commit() throws IOException {
         index.commit();
+    }
+
+    public Path getPath() {
+        return index.getIndexPath();
     }
 }

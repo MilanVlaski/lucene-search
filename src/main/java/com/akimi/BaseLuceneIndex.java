@@ -29,6 +29,7 @@ public class BaseLuceneIndex {
     }
 
     public record LuceneEngine(
+        Path indexPath,
         IndexWriter writer,
         SearcherManager searcherManager,
         ControlledRealTimeReopenThread<IndexSearcher> nrtThread
@@ -91,8 +92,8 @@ public class BaseLuceneIndex {
                 newNrtThread.setDaemon(true);
                 newNrtThread.start();
 
-                return new LuceneEngine(newWriter, newSearcherManager,
-                    newNrtThread);
+                return new LuceneEngine(indexPath, newWriter,
+                    newSearcherManager, newNrtThread);
 
             } catch (Throwable t) {
                 newSearcherManager.close();
@@ -229,6 +230,10 @@ public class BaseLuceneIndex {
 
     public SearcherManager getSearcherManager() {
         return engine.searcherManager();
+    }
+
+    public Path getIndexPath() {
+        return engine.indexPath();
     }
 
     private ControlledRealTimeReopenThread<IndexSearcher> getNrtThread() {

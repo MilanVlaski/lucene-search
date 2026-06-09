@@ -77,6 +77,61 @@ public class LoadIndexes {
         });
     }
 
+    private static void newReloadEmailIndex(EmailIndex emailIndex) {
+        var indexPath = emailIndex.getPath();
+        emailIndex.startReload(engine -> {
+            IndexWriter emailWriter = engine.writer();
+
+            try (var directory =
+                     org.apache.lucene.store.FSDirectory.open(indexPath);
+                 var reader = org.apache.lucene.index.DirectoryReader.open(directory)) {
+
+                int maxDoc = reader.maxDoc();
+                var liveDocs = org.apache.lucene.index.MultiBits.getLiveDocs(reader);
+
+                for (int i = 0; i < maxDoc; i++) {
+                    if (liveDocs != null && !liveDocs.get(i)) continue;
+
+                    var oldDoc = reader.storedFields().document(i);
+                    emailWriter.addDocument(oldDoc);
+                }
+                emailWriter.commit();
+            } catch (IOException e) {
+                throw new RuntimeException("Email index migration failed", e);
+            }
+        });
+    }
+
+    public static void newReloadEmailAddressIndex(EmailAddressIndex addressIndex) {
+        var oldIndexPath = addressIndex.getPath();
+        addressIndex.startReload(engine -> {
+            IndexWriter addressWriter = engine.writer();
+            var seenAddresses = new HashSet<String>();
+
+            try (var directory =
+                     org.apache.lucene.store.FSDirectory.open(oldIndexPath);
+                 var reader = org.apache.lucene.index.DirectoryReader.open(directory)) {
+
+                int maxDoc = reader.maxDoc();
+                var liveDocs = org.apache.lucene.index.MultiBits.getLiveDocs(reader);
+
+                for (int i = 0; i < maxDoc; i++) {
+                    if (liveDocs != null && !liveDocs.get(i)) continue;
+
+                    var oldDoc = reader.storedFields().document(i);
+                    String address = oldDoc.get("address");
+
+                    if (address != null && seenAddresses.add(address)) {
+                        addressWriter.addDocument(EmailAddressIndex.document(address));
+                    }
+                }
+                addressWriter.commit();
+            } catch (IOException e) {
+                throw new RuntimeException("Address index migration failed", e);
+            }
+        });
+    }
+
     private static String isolateHeaders(String message) {
         int headerEnd = message.indexOf("\n\n");
         if (headerEnd == -1) headerEnd = message.indexOf("\r\n\r\n");
