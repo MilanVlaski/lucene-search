@@ -33,51 +33,6 @@ public class LoadIndexes {
     }
 
     private static void reloadEmailIndex(EmailIndex emailIndex) {
-        emailIndex.startReload(triple -> {
-            IndexWriter emailWriter = triple.writer();
-
-            try (CsvReader<NamedCsvRecord> csv = CsvReader.builder().ofNamedCsvRecord(Path.of("emails.csv"))) {
-                for (NamedCsvRecord rec : csv) {
-                    String message = rec.getField("message");
-                    if (message == null || message.isBlank()) continue;
-
-                    String headers = isolateHeaders(message);
-                    String id = parseMessageId(headers);
-
-                    emailWriter.addDocument(EmailIndex.document(id, message));
-                }
-                emailWriter.commit();
-            } catch (IOException e) {
-                throw new RuntimeException("Email indexing failed", e);
-            }
-        });
-    }
-
-    public static void reloadEmailAddressIndex(EmailAddressIndex addressIndex) {
-        addressIndex.startReload(triple -> {
-            IndexWriter addressWriter = triple.writer();
-            var seenAddresses = new HashSet<String>();
-
-            try (CsvReader<NamedCsvRecord> csv = CsvReader.builder().ofNamedCsvRecord(Path.of("emails.csv"))) {
-                for (NamedCsvRecord rec : csv) {
-                    String message = rec.getField("message");
-                    if (message == null || message.isBlank()) continue;
-
-                    String headers = isolateHeaders(message);
-                    String address = parseAddress(headers);
-
-                    if (seenAddresses.add(address)) {
-                        addressWriter.addDocument(EmailAddressIndex.document(address));
-                    }
-                }
-                addressWriter.commit();
-            } catch (IOException e) {
-                throw new RuntimeException("Address indexing failed", e);
-            }
-        });
-    }
-
-    private static void newReloadEmailIndex(EmailIndex emailIndex) {
         var indexPath = emailIndex.getPath();
         emailIndex.startReload(engine -> {
             IndexWriter emailWriter = engine.writer();
@@ -102,7 +57,7 @@ public class LoadIndexes {
         });
     }
 
-    public static void newReloadEmailAddressIndex(EmailAddressIndex addressIndex) {
+    public static void reloadEmailAddressIndex(EmailAddressIndex addressIndex) {
         var oldIndexPath = addressIndex.getPath();
         addressIndex.startReload(engine -> {
             IndexWriter addressWriter = engine.writer();
