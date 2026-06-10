@@ -17,15 +17,11 @@ public class Main {
             new BaseLuceneIndex(Path.of("indexes/emails"))
         );
 
-        var listener = new RebuildSocketListener(
+        Thread.ofVirtual().start(new RebuildSocketListener(
             "/tmp/rebuild_service.sock",
             "rebuild",
-            () -> backgroundReload(addressIndex)
-        );
-
-        Thread socketThread = new Thread(listener);
-        socketThread.setDaemon(true); // Allows JVM to shut down cleanly if needed
-        socketThread.start();
+            () -> reload(addressIndex)
+        ));
 
         try {
             addressIndex.start();
@@ -59,11 +55,8 @@ public class Main {
                         case 1 -> handleSearchAddress(scanner, addressIndex);
                         case 2 -> handleAddAddress(scanner, addressIndex);
                         case 3 -> handleDeleteAddress(scanner, addressIndex);
-                        case 4 -> backgroundReload(addressIndex);
+                        case 4 -> Thread.ofVirtual().start(() -> reload(addressIndex));
                         case 5 -> addressIndex.commit();
-                        case 6 -> {
-
-                        }
 //                        case 4 -> handleSearchEmail(scanner, emailIndex);
                         default -> System.out.println("Unknown option.");
                     }
@@ -76,17 +69,13 @@ public class Main {
 
     // A more realistic use would be actually reading from a SQL db
     // and then checking but ehhh.
-    private static void backgroundReload(EmailAddressIndex addressIndex) {
-        {
-            System.out.println("Reloading index in the background...");
-            new Thread(() -> {
-                try {
-                    LoadIndexes.reloadEmailAddressIndex(addressIndex);
-                    System.out.println("\n[Success] Email address index reload complete!");
-                } catch (Exception e) {
-                    System.err.println("\n[Error] Failed to reload email address index: " + e.getMessage());
-                }
-            }).start();
+    private static void reload(EmailAddressIndex addressIndex) {
+        System.out.println("Reloading index...");
+        try {
+            LoadIndexes.reloadEmailAddressIndex(addressIndex);
+            System.out.println("\n[Success] Email address index reload complete!");
+        } catch (Exception e) {
+            System.err.println("\n[Error] Failed to reload email address index: " + e.getMessage());
         }
     }
 
